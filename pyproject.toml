@@ -1,0 +1,45 @@
+[project]
+name = "gitlab-mcp"
+version = "0.1.0"
+description = "GitLab MCP server for Claude Code - manage GitLab resources via MCP tools"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Jack Tsai", email = "snowild@gmail.com"},
+]
+keywords = ["gitlab", "mcp", "claude", "devops", "api"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "mcp[cli]>=1.9.4",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/your-username/gitlab-mcp"
+"Bug Reports" = "https://github.com/your-username/gitlab-mcp/issues"
+"Source" = "https://github.com/your-username/gitlab-mcp"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+]
+
+[project.scripts]
+gitlab-mcp = "gitlab_mcp.server:main"

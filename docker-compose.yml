@@ -1,0 +1,26 @@
+# Docker Compose 配置
+# 使用方式: docker compose up -d
+
+services:
+  gitlab-mcp:
+    build: .
+    container_name: gitlab-mcp
+    ports:
+      - "${GITLAB_MCP_PORT:-8000}:8000"
+    environment:
+      - GITLAB_URL=${GITLAB_URL}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_MCP_TRANSPORT=sse
+      - GITLAB_MCP_HOST=0.0.0.0
+      - GITLAB_MCP_PORT=8000
+      - GITLAB_MCP_LOG_LEVEL=${GITLAB_MCP_LOG_LEVEL:-INFO}
+      - GITLAB_TIMEOUT=${GITLAB_TIMEOUT:-30}
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/sse", "--max-time", "5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s

@@ -79,7 +79,11 @@ def load_targets(env: Mapping[str, str]) -> list[Target]:
         raise ValueError("必要的環境變數 GITLAB_URL 未設定（或改用 GITLAB_TARGETS_JSON）")
     if not token or not token.strip():
         raise ValueError("必要的環境變數 GITLAB_TOKEN 未設定（或改用 GITLAB_TARGETS_JSON）")
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("GITLAB_URL 必須以 http:// 或 https:// 開頭")
+    parts = urlsplit(url.strip())
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        raise ValueError("GITLAB_URL 必須以 http:// 或 https:// 開頭且有 host")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        # 網址會出現在 tool 回傳與錯誤訊息，不可夾帶帳密或 token
+        raise ValueError("GITLAB_URL 不可包含帳號密碼、query 或 fragment")
     # 相容模式保留 path（GitLab 可能裝在子路徑），行為同舊版
-    return [Target(LEGACY_ID, url.rstrip("/"), True, legacy_token=token)]
+    return [Target(LEGACY_ID, url.strip().rstrip("/"), True, legacy_token=token)]

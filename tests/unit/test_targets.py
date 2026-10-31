@@ -87,3 +87,10 @@ def test_config_legacy_repr_hides_token(monkeypatch):
 def test_legacy_keeps_subpath():
     ts = load_targets({"GITLAB_URL": "https://example.com/gitlab/", "GITLAB_TOKEN": "x"})
     assert ts[0].url == "https://example.com/gitlab"
+
+
+@pytest.mark.parametrize("url", ["https://u:SECRET@gl.io", "https://gl.io/?private_token=SECRET", "https://gl.io/#SECRET"])
+def test_legacy_rejects_userinfo_query_fragment(url):
+    with pytest.raises(ValueError) as e:
+        load_targets({"GITLAB_URL": url, "GITLAB_TOKEN": "x"})
+    assert "SECRET" not in str(e.value)

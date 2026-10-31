@@ -10,7 +10,9 @@ from urllib.parse import quote
 
 import requests
 
-from .config import get_config, GitLabConfig
+from .config import get_config, reload_config
+from .credentials import Credential, lookup_credentials
+from .targets import Target
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +29,16 @@ class GitLabAPIError(Exception):
 class GitLabClient:
     """GitLab REST API v4 客戶端"""
 
-    def __init__(self, config: GitLabConfig = None):
-        self.config = config or get_config()
+    def __init__(self, target_id: str, base_url: str, token: str, timeout: int):
+        self.target_id = target_id
+        self.base_url = base_url
+        self.api_base_url = f"{base_url}/api/v4"
+        self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update(self.config.api_headers)
+        self.session.headers.update({
+            "PRIVATE-TOKEN": token,
+            "Content-Type": "application/json",
+        })
 
     # ------------------------------------------------------------------
     # 內部輔助方法
@@ -52,23 +60,23 @@ class GitLabClient:
         Returns:
             requests.Response object（由呼叫端決定如何解析）
         """
-        url = f"{self.config.api_base_url}{endpoint}"
+        url = f"{self.api_base_url}{endpoint}"
 
         try:
             response = self.session.request(
-                method, url, timeout=self.config.timeout, **kwargs
+                method, url, timeout=self.timeout, **kwargs
             )
             response.raise_for_status()
             return response
 
         except requests.exceptions.Timeout:
             raise GitLabAPIError(
-                f"請求逾時（{self.config.timeout}秒）：{method} {endpoint}",
+                f"[{self.target_id}] 請求逾時（{self.timeout}秒）：{method} {endpoint}",
                 status_code=408,
             )
         except requests.exceptions.ConnectionError:
             raise GitLabAPIError(
-                f"無法連接到 GitLab 伺服器：{self.config.gitlab_url}",
+                f"[{self.target_id}] 無法連接到 GitLab 伺服器：{self.base_url}",
                 status_code=0,
             )
         except requests.exceptions.HTTPError as e:
@@ -80,7 +88,7 @@ class GitLabClient:
 
             error_messages = {
                 401: "認證失敗：請檢查 Personal Access Token",
-                403: "權限不足：Token 缺少所需的權限範圍",
+                403: "權限不足，或未連 VPN",
                 404: "找不到資源：請確認 ID 或路徑是否正確",
                 405: "此操作不被允許",
                 409: "衝突：資源狀態不允許此操作",
@@ -99,7 +107,13 @@ class GitLabClient:
                     message = f"{message}：{detail}"
 
             raise GitLabAPIError(
-                message, status_code=status_code, response_data=response_data
+                f"[{self.target_id}] {message}", status_code=status_code, response_data=response_data
+            )
+        except requests.exceptions.RequestException as e:
+            # 其他例外的訊息可能含 header 值（token），只回類別名稱
+            raise GitLabAPIError(
+                f"[{self.target_id}] 請求失敗（{type(e).__name__}）：{method} {endpoint}",
+                status_code=0,
             )
 
     def _get_json(self, endpoint: str, params: dict = None) -> dict | list:
@@ -446,19 +460,57 @@ class GitLabClient:
 # 全域客戶端實例
 # ------------------------------------------------------------------
 
-_client: Optional[GitLabClient] = None
+_clients: dict[str, GitLabClient] = {}
 
 
-def get_client() -> GitLabClient:
-    """取得全域客戶端實例（單例模式）"""
-    global _client
-    if _client is None:
-        _client = GitLabClient()
-    return _client
+class TargetError(GitLabAPIError):
+    """target_id 未知，或該 target 沒有可用 token（不發 request）"""
 
 
-def reload_client() -> GitLabClient:
-    """重新載入客戶端（主要用於測試）"""
-    global _client
-    _client = None
-    return get_client()
+def target_states() -> list[tuple[Target, Credential]]:
+    """各 target 與其憑證狀態；相容模式不讀憑證檔"""
+    config = get_config()
+    if not config.multi_target:
+        return [(t, Credential("present")) for t in config.targets]
+    creds = lookup_credentials(config.credentials_file, config.targets)
+    return [(t, creds[t.id]) for t in config.targets]
+
+
+def state_message(target: Target, cred: Credential, path: Optional[str]) -> str:
+    if cred.state == "missing":
+        return f"[{target.id}] 憑證檔 {path} 沒有 url 為 {target.url} 的 token，請加一筆"
+    if cred.state == "ambiguous":
+        return f"[{target.id}] 憑證檔 {path} 有多筆 url 為 {target.url} 的 token，請刪到剩一筆"
+    return f"[{target.id}] {cred.error}"
+
+
+def get_client(target_id: Optional[str] = None) -> GitLabClient:
+    """依 target_id 取得客戶端；None 為預設 target。每次呼叫重讀憑證檔"""
+    config = get_config()
+    if target_id is None:
+        target = config.default_target
+    else:
+        target = next((t for t in config.targets if t.id == target_id), None)
+        if target is None:
+            ids = ", ".join(t.id for t in config.targets)
+            raise TargetError(f"未知的 target_id '{target_id}'，可用：{ids}")
+
+    if config.multi_target:
+        cred = lookup_credentials(config.credentials_file, [target])[target.id]
+        if cred.state != "present":
+            raise TargetError(state_message(target, cred, config.credentials_file))
+        token = cred.token
+    else:
+        token = target.legacy_token
+
+    client = _clients.get(target.id)
+    if client is None or client.session.headers.get("PRIVATE-TOKEN") != token:
+        client = GitLabClient(target.id, target.url, token, config.timeout)
+        _clients[target.id] = client
+    return client
+
+
+def reload_client() -> None:
+    """清空客戶端快取並重讀配置（主要用於測試）"""
+    _clients.clear()
+    reload_config()

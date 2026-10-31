@@ -36,7 +36,7 @@ def list_targets() -> str:
     config = get_config()
     lines = []
     for t, cred in target_states():
-        line = f"- {t.id}: {t.url}{' (預設)' if t.is_default else ''} — {cred.state}"
+        line = f"- {t.id}: {t.url}{' (預設)' if t.is_default else ''} — credential_state: {cred.state}"
         if cred.state != "present":
             line += f"\n  {state_message(t, cred, config.credentials_file)}"
         lines.append(line)

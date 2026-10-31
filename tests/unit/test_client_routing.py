@@ -127,3 +127,11 @@ def test_legacy_mode_uses_env_token(monkeypatch, tmp_path):
     assert client.session.headers["PRIVATE-TOKEN"] == "t-legacy"
     assert [(t.id, c.state) for t, c in target_states()] == [("default", "present")]
     gc.reload_client()
+
+
+def test_unexpected_request_error_hides_token(creds):
+    err = requests.exceptions.InvalidHeader("Invalid header value b't-larvata'")
+    with patch("requests.Session.request", side_effect=err):
+        with pytest.raises(GitLabAPIError) as e:
+            get_client("larvata").get_server_version()
+    assert str(e.value).startswith("[larvata] ") and "t-larvata" not in str(e.value)

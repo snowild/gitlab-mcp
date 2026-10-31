@@ -24,12 +24,11 @@ class Target:
     legacy_token: Optional[str] = field(default=None, repr=False)
 
 
-def normalize_origin(url: str, allow_http: bool = False) -> str:
+def normalize_origin(url: str) -> str:
     """回傳 scheme://host[:port]（小寫、無 path、無尾斜線）"""
     parts = urlsplit(str(url).strip())
-    schemes = ("https", "http") if allow_http else ("https",)
-    if parts.scheme.lower() not in schemes or not parts.hostname:
-        raise ValueError(f"url 必須是 {' 或 '.join(schemes)} 且有 host：{url}")
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        raise ValueError(f"url 必須是 https 且有 host：{url}")
     origin = f"{parts.scheme.lower()}://{parts.hostname.lower()}"
     if parts.port:
         origin += f":{parts.port}"
@@ -80,4 +79,7 @@ def load_targets(env: Mapping[str, str]) -> list[Target]:
         raise ValueError("必要的環境變數 GITLAB_URL 未設定（或改用 GITLAB_TARGETS_JSON）")
     if not token or not token.strip():
         raise ValueError("必要的環境變數 GITLAB_TOKEN 未設定（或改用 GITLAB_TARGETS_JSON）")
-    return [Target(LEGACY_ID, normalize_origin(url, allow_http=True), True, legacy_token=token)]
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("GITLAB_URL 必須以 http:// 或 https:// 開頭")
+    # 相容模式保留 path（GitLab 可能裝在子路徑），行為同舊版
+    return [Target(LEGACY_ID, url.rstrip("/"), True, legacy_token=token)]

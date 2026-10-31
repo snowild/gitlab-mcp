@@ -45,7 +45,7 @@ def test_every_tool_accepts_target_id(server):
 
 def test_list_targets_no_token(creds_without_enzus):
     out = creds_without_enzus.list_targets()
-    assert "larvata" in out and "present" in out and "(預設)" in out
+    assert "larvata" in out and "credential_state: present" in out and "(預設)" in out
     assert "enzus" in out and "missing" in out
     assert "t-larvata" not in out
 

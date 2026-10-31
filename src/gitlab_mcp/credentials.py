@@ -28,6 +28,8 @@ def _read_file(path: str) -> dict:
         st = os.stat(path)
     except FileNotFoundError:
         raise ValueError(f"憑證檔 {path} 不存在，請依 setup 2.0 建立")
+    except OSError:
+        raise ValueError(f"憑證檔 {path} 無法存取，請確認路徑與上層目錄權限")
     if not stat.S_ISREG(st.st_mode):
         raise ValueError(f"憑證檔 {path} 不是一般檔案，請確認 docker -v 的來源是檔案而不是目錄")
     if st.st_mode & 0o077:
@@ -55,11 +57,14 @@ def lookup_credentials(path: str, targets: list[Target]) -> dict[str, Credential
         token = entry.get("token")
         if not isinstance(token, str) or not token.strip():
             continue
+        token = token.strip()
+        if any(ord(c) < 0x20 or ord(c) == 0x7f for c in token):
+            continue  # header 放不進去，requests 會在例外訊息裡帶出值
         try:
             origin = normalize_origin(entry.get("url", ""))
         except ValueError:
             continue
-        tokens_by_origin.setdefault(origin, []).append(token.strip())
+        tokens_by_origin.setdefault(origin, []).append(token)
 
     result: dict[str, Credential] = {}
     for t in targets:

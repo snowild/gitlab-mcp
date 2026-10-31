@@ -66,3 +66,20 @@ def test_file_error(tmp_path, case):
 
 def test_repr_hides_token():
     assert "t-x" not in repr(Credential("present", "t-x"))
+
+
+def test_token_with_control_chars_skipped(tmp_path):
+    f = write_creds(tmp_path / "c.json", {"g": {"url": LARVATA, "token": "glpat-a\nSECRET"}})
+    assert lookup_credentials(f, [T_LARVATA])["larvata"].state == "missing"
+
+
+def test_permission_error_is_file_error(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    path = write_creds(locked / "c.json", {"g": {"url": LARVATA, "token": "t"}})
+    os.chmod(locked, 0)
+    try:
+        r = lookup_credentials(path, [T_LARVATA])["larvata"]
+    finally:
+        os.chmod(locked, 0o700)
+    assert r.state == "file_error" and path in r.error

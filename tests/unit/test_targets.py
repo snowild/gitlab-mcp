@@ -82,3 +82,8 @@ def test_config_legacy_repr_hides_token(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "glpat-SECRET")
     c = GitLabConfig()
     assert not c.multi_target and "glpat-SECRET" not in repr(c)
+
+
+def test_legacy_keeps_subpath():
+    ts = load_targets({"GITLAB_URL": "https://example.com/gitlab/", "GITLAB_TOKEN": "x"})
+    assert ts[0].url == "https://example.com/gitlab"

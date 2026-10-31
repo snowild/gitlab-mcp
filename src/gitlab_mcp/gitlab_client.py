@@ -109,6 +109,12 @@ class GitLabClient:
             raise GitLabAPIError(
                 f"[{self.target_id}] {message}", status_code=status_code, response_data=response_data
             )
+        except requests.exceptions.RequestException as e:
+            # 其他例外的訊息可能含 header 值（token），只回類別名稱
+            raise GitLabAPIError(
+                f"[{self.target_id}] 請求失敗（{type(e).__name__}）：{method} {endpoint}",
+                status_code=0,
+            )
 
     def _get_json(self, endpoint: str, params: dict = None) -> dict | list:
         """GET 請求，回傳 JSON"""

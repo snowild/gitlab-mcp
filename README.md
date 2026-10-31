@@ -21,7 +21,7 @@ GitLab MCP Server — 透過 Model Context Protocol 讓 AI 助手（Claude Code�
    ```json
    {
      "gitlab-larvata": { "url": "https://gitlab.example.com", "token": "glpat-..." },
-     "gitlab-enzus":   { "url": "https://gitlab-new.example.com", "token": "glpat-..." }
+     "gitlab-larvata-new": { "url": "https://gitlab-new.example.com", "token": "glpat-..." }
    }
    ```
 
@@ -32,7 +32,7 @@ GitLab MCP Server — 透過 Model Context Protocol 讓 AI 助手（Claude Code�
    GITLAB_MCP_HOST=0.0.0.0
    GITLAB_MCP_PORT=8000
    GITLAB_CREDENTIALS_FILE=/creds.json
-   GITLAB_TARGETS_JSON=[{"id":"larvata","url":"https://gitlab.example.com","default":true},{"id":"enzus","url":"https://gitlab-new.example.com"}]
+   GITLAB_TARGETS_JSON=[{"id":"larvata","url":"https://gitlab.example.com","default":true},{"id":"larvata-new","url":"https://gitlab-new.example.com"}]
    ```
 
 3. 建置與啟動：

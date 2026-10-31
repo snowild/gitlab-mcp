@@ -7,6 +7,8 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 
+from .targets import Target, load_targets
+
 
 class GitLabConfig:
     """GitLab MCP 服務器配置管理"""
@@ -14,9 +16,10 @@ class GitLabConfig:
     def __init__(self):
         load_dotenv()
 
-        # 必要配置
-        self.gitlab_url = self._get_required_env("GITLAB_URL")
-        self.gitlab_token = self._get_required_env("GITLAB_TOKEN")
+        # GitLab target 清單（多 target 或 GITLAB_URL/GITLAB_TOKEN 相容模式）
+        self.multi_target = bool(os.getenv("GITLAB_TARGETS_JSON"))
+        self.targets: list[Target] = load_targets(os.environ)
+        self.credentials_file: Optional[str] = os.getenv("GITLAB_CREDENTIALS_FILE")
 
         # 可選配置
         self.timeout = int(os.getenv("GITLAB_TIMEOUT", "30"))
@@ -33,25 +36,10 @@ class GitLabConfig:
 
         self._validate_config()
 
-    def _get_required_env(self, key: str) -> str:
-        """取得必要的環境變數，如果不存在則拋出錯誤"""
-        value = os.getenv(key)
-        if not value:
-            raise ValueError(f"必要的環境變數 {key} 未設定")
-        return value
-
     def _validate_config(self) -> None:
         """驗證配置的有效性"""
-        # 驗證 URL 格式
-        if not self.gitlab_url.startswith(('http://', 'https://')):
-            raise ValueError("GITLAB_URL 必須以 http:// 或 https:// 開頭")
-
-        # 移除末尾的斜線
-        self.gitlab_url = self.gitlab_url.rstrip('/')
-
-        # 驗證 token 不為空
-        if not self.gitlab_token.strip():
-            raise ValueError("GITLAB_TOKEN 不能為空")
+        if self.multi_target and not self.credentials_file:
+            raise ValueError("多 target 模式必須設定 GITLAB_CREDENTIALS_FILE")
 
         # 驗證 timeout 值
         if self.timeout <= 0:
@@ -72,22 +60,14 @@ class GitLabConfig:
             raise ValueError(f"SSE 埠號必須在 1-65535 之間（當前: {self.sse_port}）")
 
     @property
-    def api_base_url(self) -> str:
-        """回傳 GitLab API v4 的基礎 URL"""
-        return f"{self.gitlab_url}/api/v4"
-
-    @property
-    def api_headers(self) -> dict[str, str]:
-        """回傳 API 請求所需的標頭"""
-        return {
-            "PRIVATE-TOKEN": self.gitlab_token,
-            "Content-Type": "application/json",
-        }
+    def default_target(self) -> Target:
+        return next(t for t in self.targets if t.is_default)
 
     def __repr__(self) -> str:
-        """除錯用的字串表示，隱藏敏感資訊"""
+        """除錯用的字串表示，不含 token"""
+        targets = ", ".join(f"{t.id}={t.url}" for t in self.targets)
         return (
-            f"GitLabConfig(url='{self.gitlab_url}', timeout={self.timeout}, "
+            f"GitLabConfig(targets=[{targets}], timeout={self.timeout}, "
             f"transport='{self.transport}', sse_host='{self.sse_host}', "
             f"sse_port={self.sse_port}, log_level='{self.log_level}', "
             f"debug={self.debug_mode})"

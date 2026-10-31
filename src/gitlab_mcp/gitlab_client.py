@@ -470,7 +470,7 @@ def target_states() -> list[tuple[Target, Credential]]:
     return [(t, creds[t.id]) for t in config.targets]
 
 
-def _state_message(target: Target, cred: Credential, path: Optional[str]) -> str:
+def state_message(target: Target, cred: Credential, path: Optional[str]) -> str:
     if cred.state == "missing":
         return f"[{target.id}] 憑證檔 {path} 沒有 url 為 {target.url} 的 token，請加一筆"
     if cred.state == "ambiguous":
@@ -492,7 +492,7 @@ def get_client(target_id: Optional[str] = None) -> GitLabClient:
     if config.multi_target:
         cred = lookup_credentials(config.credentials_file, [target])[target.id]
         if cred.state != "present":
-            raise TargetError(_state_message(target, cred, config.credentials_file))
+            raise TargetError(state_message(target, cred, config.credentials_file))
         token = cred.token
     else:
         token = target.legacy_token

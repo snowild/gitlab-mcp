@@ -12,7 +12,7 @@ from .config import get_config
 config = get_config()
 
 from mcp.server.fastmcp import FastMCP
-from .gitlab_client import get_client, GitLabAPIError
+from .gitlab_client import GitLabAPIError, state_message, get_client, target_states
 from .validators import GitLabValidator
 
 logger = logging.getLogger(__name__)
@@ -27,37 +27,72 @@ mcp = FastMCP("GitLab MCP")
 
 
 @mcp.tool()
-def server_info() -> str:
-    """取得 GitLab MCP 服務器資訊和連線狀態"""
+def list_targets() -> str:
+    """列出可用的 GitLab 主機（target_id、網址、是否預設、憑證狀態）
+
+    其他 tool 的 target_id 參數用這裡列出的 id；省略時用預設台。
+    憑證狀態：present 可用；missing／ambiguous／file_error 需依提示修正憑證檔。
+    """
+    config = get_config()
+    lines = []
+    for t, cred in target_states():
+        line = f"- {t.id}: {t.url}{' (預設)' if t.is_default else ''} — {cred.state}"
+        if cred.state != "present":
+            line += f"\n  {state_message(t, cred, config.credentials_file)}"
+        lines.append(line)
+    return "GitLab targets:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def server_info(target_id: str | None = None) -> str:
+    """取得 GitLab MCP 服務器資訊和連線狀態
+
+    Args:
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
+    """
     config = get_config()
     try:
-        client = get_client()
-        version_info = client.get_server_version()
-        gitlab_version = version_info.get("version", "未知")
+        client = get_client(target_id)
+    except GitLabAPIError as e:
+        return f"GitLab MCP 服務器已啟動（無法使用此 target）\n- 錯誤: {str(e)}"
+    try:
+        gitlab_version = client.get_server_version().get("version", "未知")
         return f"""GitLab MCP 服務器已啟動
-- GitLab 位址: {config.gitlab_url}
+- Target: {client.target_id}
+- GitLab 位址: {client.base_url}
 - GitLab 版本: {gitlab_version}
 - API 逾時: {config.timeout}秒
 - 日誌級別: {config.log_level}"""
     except GitLabAPIError as e:
         return f"""GitLab MCP 服務器已啟動（無法取得版本資訊）
-- GitLab 位址: {config.gitlab_url}
+- Target: {client.target_id}
+- GitLab 位址: {client.base_url}
 - 連線錯誤: {str(e)}"""
 
 
-@mcp.tool()
-def health_check() -> str:
-    """健康檢查，確認與 GitLab 伺服器的連線狀態"""
+def _check_one(target_id: str) -> str:
     try:
-        client = get_client()
-        config = get_config()
-        if client.test_connection():
-            version_info = client.get_server_version()
-            return f"✓ 連線正常 — {config.gitlab_url}（GitLab {version_info.get('version', '?')}）"
-        else:
-            return f"✗ 無法連接到 {config.gitlab_url}"
+        client = get_client(target_id)
+        version = client.get_server_version().get("version", "?")
+        return f"✓ [{target_id}] 連線正常 — {client.base_url}（GitLab {version}）"
+    except GitLabAPIError as e:
+        msg = str(e)
+        prefix = f"[{target_id}] "
+        return f"✗ [{target_id}] {msg[len(prefix):] if msg.startswith(prefix) else msg}"
     except Exception as e:
-        return f"✗ 連線異常: {str(e)}"
+        return f"✗ [{target_id}] 連線異常: {type(e).__name__}"
+
+
+@mcp.tool()
+def health_check(target_id: str | None = None) -> str:
+    """健康檢查；不帶 target_id 時逐台檢查所有 GitLab 主機
+
+    Args:
+        target_id: 只檢查這台（見 list_targets）；省略則全部檢查
+    """
+    if target_id is not None:
+        return _check_one(target_id)
+    return "\n".join(_check_one(t.id) for t in get_config().targets)
 
 
 # ======================================================================
@@ -67,7 +102,8 @@ def health_check() -> str:
 
 @mcp.tool()
 def list_projects(search: str = None, membership: bool = True,
-                  page: int = 1, per_page: int = 20) -> str:
+                  page: int = 1, per_page: int = 20,
+                  target_id: str | None = None) -> str:
     """列出可存取的 GitLab 專案
 
     Args:
@@ -75,9 +111,10 @@ def list_projects(search: str = None, membership: bool = True,
         membership: 僅列出已加入的專案（預設 True）
         page: 頁碼（預設 1）
         per_page: 每頁筆數（預設 20，最大 100）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         projects = client.list_projects(search=search, membership=membership,
                                         page=page, per_page=per_page)
         if not projects:
@@ -99,14 +136,16 @@ def list_projects(search: str = None, membership: bool = True,
 
 
 @mcp.tool()
-def get_project(project_id: int | str) -> str:
+def get_project(project_id: int | str,
+                target_id: str | None = None) -> str:
     """取得 GitLab 專案詳細資訊
 
     Args:
         project_id: 專案 ID（數字）或路徑（如 group/project）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         p = client.get_project(project_id)
         return f"""專案: {p['name']} [{p['id']}]
 路徑: {p['path_with_namespace']}
@@ -123,16 +162,18 @@ def get_project(project_id: int | str) -> str:
 
 @mcp.tool()
 def list_project_members(project_id: int | str, page: int = 1,
-                         per_page: int = 20) -> str:
+                         per_page: int = 20,
+                         target_id: str | None = None) -> str:
     """列出專案成員
 
     Args:
         project_id: 專案 ID 或路徑
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         members = client.list_project_members(project_id, page=page, per_page=per_page)
         if not members:
             return "此專案沒有成員"
@@ -154,7 +195,8 @@ def list_project_members(project_id: int | str, page: int = 1,
 
 @mcp.tool()
 def list_merge_requests(project_id: int | str, state: str = None,
-                        page: int = 1, per_page: int = 20) -> str:
+                        page: int = 1, per_page: int = 20,
+                        target_id: str | None = None) -> str:
     """列出專案的 Merge Requests
 
     Args:
@@ -162,6 +204,7 @@ def list_merge_requests(project_id: int | str, state: str = None,
         state: 狀態篩選（opened, closed, merged, all）
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         if state:
@@ -169,7 +212,7 @@ def list_merge_requests(project_id: int | str, state: str = None,
             if not v.is_valid:
                 return "\n".join(v.errors)
 
-        client = get_client()
+        client = get_client(target_id)
         mrs = client.list_merge_requests(project_id, state=state, page=page, per_page=per_page)
         if not mrs:
             return "找不到符合條件的 Merge Request"
@@ -189,15 +232,17 @@ def list_merge_requests(project_id: int | str, state: str = None,
 
 
 @mcp.tool()
-def get_merge_request(project_id: int | str, mr_iid: int) -> str:
+def get_merge_request(project_id: int | str, mr_iid: int,
+                      target_id: str | None = None) -> str:
     """取得 Merge Request 詳細資訊
 
     Args:
         project_id: 專案 ID 或路徑
         mr_iid: MR 的 IID（專案內編號）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         mr = client.get_merge_request(project_id, mr_iid)
 
         status_emoji = {"opened": "🟢", "closed": "🔴", "merged": "🟣"}
@@ -242,7 +287,8 @@ Pipeline: {pipeline_str}
 def create_merge_request(project_id: int | str, source_branch: str,
                          target_branch: str, title: str,
                          description: str = None, assignee_id: int = None,
-                         reviewer_ids: str = None) -> str:
+                         reviewer_ids: str = None,
+                         target_id: str | None = None) -> str:
     """建立新的 Merge Request
 
     Args:
@@ -253,6 +299,7 @@ def create_merge_request(project_id: int | str, source_branch: str,
         description: MR 描述
         assignee_id: 指派人 ID
         reviewer_ids: 審核者 ID 列表（逗號分隔，如 "1,2,3"）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         v = GitLabValidator.validate_merge_request_data({
@@ -271,7 +318,7 @@ def create_merge_request(project_id: int | str, source_branch: str,
             except ValueError:
                 return "reviewer_ids 格式錯誤，請使用逗號分隔的數字（如 1,2,3）"
 
-        client = get_client()
+        client = get_client(target_id)
         mr = client.create_merge_request(
             project_id, source_branch, target_branch, title,
             description=description, assignee_id=assignee_id,
@@ -286,7 +333,8 @@ def create_merge_request(project_id: int | str, source_branch: str,
 def update_merge_request(project_id: int | str, mr_iid: int,
                          title: str = None, description: str = None,
                          state_event: str = None, assignee_id: int = None,
-                         reviewer_ids: str = None, target_branch: str = None) -> str:
+                         reviewer_ids: str = None, target_branch: str = None,
+                         target_id: str | None = None) -> str:
     """更新 Merge Request
 
     Args:
@@ -298,6 +346,7 @@ def update_merge_request(project_id: int | str, mr_iid: int,
         assignee_id: 新指派人 ID
         reviewer_ids: 審核者 ID 列表（逗號分隔）
         target_branch: 新目標分支
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         data = {}
@@ -324,7 +373,7 @@ def update_merge_request(project_id: int | str, mr_iid: int,
         if not v.is_valid:
             return "驗證失敗：\n" + "\n".join(v.errors)
 
-        client = get_client()
+        client = get_client(target_id)
         mr = client.update_merge_request(project_id, mr_iid, **data)
         return f"✓ MR !{mr['iid']} 已更新 — {mr['title']} [{mr.get('state', '')}]"
     except GitLabAPIError as e:
@@ -334,7 +383,8 @@ def update_merge_request(project_id: int | str, mr_iid: int,
 @mcp.tool()
 def merge_merge_request(project_id: int | str, mr_iid: int,
                         merge_commit_message: str = None,
-                        should_remove_source_branch: bool = False) -> str:
+                        should_remove_source_branch: bool = False,
+                        target_id: str | None = None) -> str:
     """合併 Merge Request
 
     Args:
@@ -342,9 +392,10 @@ def merge_merge_request(project_id: int | str, mr_iid: int,
         mr_iid: MR 的 IID
         merge_commit_message: 自訂合併 commit 訊息
         should_remove_source_branch: 合併後是否刪除來源分支
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         mr = client.merge_merge_request(
             project_id, mr_iid,
             merge_commit_message=merge_commit_message,
@@ -359,15 +410,17 @@ def merge_merge_request(project_id: int | str, mr_iid: int,
 
 
 @mcp.tool()
-def approve_merge_request(project_id: int | str, mr_iid: int) -> str:
+def approve_merge_request(project_id: int | str, mr_iid: int,
+                          target_id: str | None = None) -> str:
     """核准 Merge Request
 
     Args:
         project_id: 專案 ID 或路徑
         mr_iid: MR 的 IID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         client.approve_merge_request(project_id, mr_iid)
         return f"✓ MR !{mr_iid} 已核准"
     except GitLabAPIError as e:
@@ -375,15 +428,17 @@ def approve_merge_request(project_id: int | str, mr_iid: int) -> str:
 
 
 @mcp.tool()
-def get_merge_request_changes(project_id: int | str, mr_iid: int) -> str:
+def get_merge_request_changes(project_id: int | str, mr_iid: int,
+                              target_id: str | None = None) -> str:
     """取得 Merge Request 的檔案變更（diff）
 
     Args:
         project_id: 專案 ID 或路徑
         mr_iid: MR 的 IID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         data = client.get_merge_request_changes(project_id, mr_iid)
 
         changes = data.get("changes", [])
@@ -419,15 +474,17 @@ def get_merge_request_changes(project_id: int | str, mr_iid: int) -> str:
 
 
 @mcp.tool()
-def get_merge_request_commits(project_id: int | str, mr_iid: int) -> str:
+def get_merge_request_commits(project_id: int | str, mr_iid: int,
+                              target_id: str | None = None) -> str:
     """取得 Merge Request 包含的 commits
 
     Args:
         project_id: 專案 ID 或路徑
         mr_iid: MR 的 IID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         commits = client.get_merge_request_commits(project_id, mr_iid)
 
         if not commits:
@@ -446,7 +503,8 @@ def get_merge_request_commits(project_id: int | str, mr_iid: int) -> str:
 
 @mcp.tool()
 def list_merge_request_notes(project_id: int | str, mr_iid: int,
-                             page: int = 1, per_page: int = 20) -> str:
+                             page: int = 1, per_page: int = 20,
+                             target_id: str | None = None) -> str:
     """列出 Merge Request 的留言
 
     Args:
@@ -454,9 +512,10 @@ def list_merge_request_notes(project_id: int | str, mr_iid: int,
         mr_iid: MR 的 IID
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         notes = client.list_merge_request_notes(project_id, mr_iid, page=page, per_page=per_page)
 
         if not notes:
@@ -478,19 +537,21 @@ def list_merge_request_notes(project_id: int | str, mr_iid: int,
 
 @mcp.tool()
 def create_merge_request_note(project_id: int | str, mr_iid: int,
-                              body: str) -> str:
+                              body: str,
+                              target_id: str | None = None) -> str:
     """新增 Merge Request 留言
 
     Args:
         project_id: 專案 ID 或路徑
         mr_iid: MR 的 IID
         body: 留言內容（支援 Markdown）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         if not body or not body.strip():
             return "留言內容不能為空"
 
-        client = get_client()
+        client = get_client(target_id)
         note = client.create_merge_request_note(project_id, mr_iid, body)
         return f"✓ 留言已新增至 MR !{mr_iid}（留言 ID: {note['id']}）"
     except GitLabAPIError as e:
@@ -504,7 +565,8 @@ def create_merge_request_note(project_id: int | str, mr_iid: int,
 
 @mcp.tool()
 def list_pipelines(project_id: int | str, status: str = None,
-                   ref: str = None, page: int = 1, per_page: int = 20) -> str:
+                   ref: str = None, page: int = 1, per_page: int = 20,
+                   target_id: str | None = None) -> str:
     """列出專案的 CI/CD Pipelines
 
     Args:
@@ -513,6 +575,7 @@ def list_pipelines(project_id: int | str, status: str = None,
         ref: 分支或標籤名稱篩選
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         if status:
@@ -520,7 +583,7 @@ def list_pipelines(project_id: int | str, status: str = None,
             if not v.is_valid:
                 return "\n".join(v.errors)
 
-        client = get_client()
+        client = get_client(target_id)
         pipelines = client.list_pipelines(project_id, status=status, ref=ref,
                                           page=page, per_page=per_page)
         if not pipelines:
@@ -544,15 +607,17 @@ def list_pipelines(project_id: int | str, status: str = None,
 
 
 @mcp.tool()
-def get_pipeline(project_id: int | str, pipeline_id: int) -> str:
+def get_pipeline(project_id: int | str, pipeline_id: int,
+                 target_id: str | None = None) -> str:
     """取得 Pipeline 詳細資訊
 
     Args:
         project_id: 專案 ID 或路徑
         pipeline_id: Pipeline ID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         p = client.get_pipeline(project_id, pipeline_id)
 
         status_emoji = {
@@ -577,13 +642,15 @@ SHA: {p.get('sha', 'N/A')}
 
 @mcp.tool()
 def create_pipeline(project_id: int | str, ref: str,
-                    variables: str = None) -> str:
+                    variables: str = None,
+                    target_id: str | None = None) -> str:
     """觸發新的 CI/CD Pipeline
 
     Args:
         project_id: 專案 ID 或路徑
         ref: 分支名稱或標籤
         variables: Pipeline 變數（JSON 格式，如 '[{"key":"VAR1","value":"val1"}]'）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
         parsed_vars = None
@@ -597,7 +664,7 @@ def create_pipeline(project_id: int | str, ref: str,
             if not v.is_valid:
                 return "驗證失敗：\n" + "\n".join(v.errors)
 
-        client = get_client()
+        client = get_client(target_id)
         p = client.create_pipeline(project_id, ref, variables=parsed_vars)
         return f"✓ Pipeline #{p['id']} 已觸發\n  Ref: {ref} | 狀態: {p.get('status', 'N/A')}\n  網址: {p.get('web_url', '')}"
     except GitLabAPIError as e:
@@ -605,15 +672,17 @@ def create_pipeline(project_id: int | str, ref: str,
 
 
 @mcp.tool()
-def retry_pipeline(project_id: int | str, pipeline_id: int) -> str:
+def retry_pipeline(project_id: int | str, pipeline_id: int,
+                   target_id: str | None = None) -> str:
     """重試 Pipeline
 
     Args:
         project_id: 專案 ID 或路徑
         pipeline_id: Pipeline ID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         p = client.retry_pipeline(project_id, pipeline_id)
         return f"✓ Pipeline #{p['id']} 已重試 | 狀態: {p.get('status', 'N/A')}"
     except GitLabAPIError as e:
@@ -621,15 +690,17 @@ def retry_pipeline(project_id: int | str, pipeline_id: int) -> str:
 
 
 @mcp.tool()
-def cancel_pipeline(project_id: int | str, pipeline_id: int) -> str:
+def cancel_pipeline(project_id: int | str, pipeline_id: int,
+                    target_id: str | None = None) -> str:
     """取消 Pipeline
 
     Args:
         project_id: 專案 ID 或路徑
         pipeline_id: Pipeline ID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         p = client.cancel_pipeline(project_id, pipeline_id)
         return f"✓ Pipeline #{p['id']} 已取消 | 狀態: {p.get('status', 'N/A')}"
     except GitLabAPIError as e:
@@ -638,7 +709,8 @@ def cancel_pipeline(project_id: int | str, pipeline_id: int) -> str:
 
 @mcp.tool()
 def list_pipeline_jobs(project_id: int | str, pipeline_id: int,
-                       page: int = 1, per_page: int = 20) -> str:
+                       page: int = 1, per_page: int = 20,
+                       target_id: str | None = None) -> str:
     """列出 Pipeline 的所有 Jobs
 
     Args:
@@ -646,9 +718,10 @@ def list_pipeline_jobs(project_id: int | str, pipeline_id: int,
         pipeline_id: Pipeline ID
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         jobs = client.list_pipeline_jobs(project_id, pipeline_id, page=page, per_page=per_page)
 
         if not jobs:
@@ -673,15 +746,17 @@ def list_pipeline_jobs(project_id: int | str, pipeline_id: int,
 
 
 @mcp.tool()
-def get_job(project_id: int | str, job_id: int) -> str:
+def get_job(project_id: int | str, job_id: int,
+            target_id: str | None = None) -> str:
     """取得 Job 詳細資訊
 
     Args:
         project_id: 專案 ID 或路徑
         job_id: Job ID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         j = client.get_job(project_id, job_id)
 
         status_emoji = {
@@ -708,16 +783,18 @@ Runner: {j.get('runner', {}).get('description', 'N/A') if j.get('runner') else '
 
 
 @mcp.tool()
-def get_job_log(project_id: int | str, job_id: int, last_lines: int = 0) -> str:
+def get_job_log(project_id: int | str, job_id: int, last_lines: int = 0,
+                target_id: str | None = None) -> str:
     """取得 Job 的執行日誌
 
     Args:
         project_id: 專案 ID 或路徑
         job_id: Job ID
         last_lines: 只顯示最後 N 行（0 表示全部，預設 0）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         log = client.get_job_log(project_id, job_id)
 
         if not log:
@@ -739,15 +816,17 @@ def get_job_log(project_id: int | str, job_id: int, last_lines: int = 0) -> str:
 
 
 @mcp.tool()
-def retry_job(project_id: int | str, job_id: int) -> str:
+def retry_job(project_id: int | str, job_id: int,
+              target_id: str | None = None) -> str:
     """重試單一 Job
 
     Args:
         project_id: 專案 ID 或路徑
         job_id: Job ID
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         j = client.retry_job(project_id, job_id)
         return f"✓ Job #{j['id']} ({j.get('name', 'N/A')}) 已重試 | 狀態: {j.get('status', 'N/A')}"
     except GitLabAPIError as e:
@@ -761,7 +840,8 @@ def retry_job(project_id: int | str, job_id: int) -> str:
 
 @mcp.tool()
 def list_branches(project_id: int | str, search: str = None,
-                  page: int = 1, per_page: int = 20) -> str:
+                  page: int = 1, per_page: int = 20,
+                  target_id: str | None = None) -> str:
     """列出專案的分支
 
     Args:
@@ -769,9 +849,10 @@ def list_branches(project_id: int | str, search: str = None,
         search: 搜尋關鍵字
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         branches = client.list_branches(project_id, search=search, page=page, per_page=per_page)
 
         if not branches:
@@ -799,15 +880,17 @@ def list_branches(project_id: int | str, search: str = None,
 
 
 @mcp.tool()
-def get_branch(project_id: int | str, branch_name: str) -> str:
+def get_branch(project_id: int | str, branch_name: str,
+               target_id: str | None = None) -> str:
     """取得分支詳細資訊
 
     Args:
         project_id: 專案 ID 或路徑
         branch_name: 分支名稱
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         b = client.get_branch(project_id, branch_name)
 
         commit = b.get("commit", {})
@@ -832,7 +915,8 @@ Commit 時間: {commit.get('committed_date', 'N/A')}
 
 @mcp.tool()
 def list_commits(project_id: int | str, ref_name: str = None,
-                 path: str = None, page: int = 1, per_page: int = 20) -> str:
+                 path: str = None, page: int = 1, per_page: int = 20,
+                 target_id: str | None = None) -> str:
     """列出 Commits
 
     Args:
@@ -841,9 +925,10 @@ def list_commits(project_id: int | str, ref_name: str = None,
         path: 檔案路徑篩選
         page: 頁碼
         per_page: 每頁筆數
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         commits = client.list_commits(project_id, ref_name=ref_name, path=path,
                                        page=page, per_page=per_page)
         if not commits:
@@ -861,15 +946,17 @@ def list_commits(project_id: int | str, ref_name: str = None,
 
 
 @mcp.tool()
-def get_commit(project_id: int | str, sha: str) -> str:
+def get_commit(project_id: int | str, sha: str,
+               target_id: str | None = None) -> str:
     """取得 Commit 詳細資訊
 
     Args:
         project_id: 專案 ID 或路徑
         sha: Commit SHA（完整或縮短）
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         c = client.get_commit(project_id, sha)
 
         stats = c.get("stats", {})
@@ -885,16 +972,18 @@ def get_commit(project_id: int | str, sha: str) -> str:
 
 
 @mcp.tool()
-def compare_branches(project_id: int | str, from_ref: str, to_ref: str) -> str:
+def compare_branches(project_id: int | str, from_ref: str, to_ref: str,
+                     target_id: str | None = None) -> str:
     """比較兩個分支或 commit 的差異
 
     Args:
         project_id: 專案 ID 或路徑
         from_ref: 起始分支/commit
         to_ref: 目標分支/commit
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         data = client.compare_branches(project_id, from_ref, to_ref)
 
         commits = data.get("commits", [])
@@ -930,7 +1019,8 @@ def compare_branches(project_id: int | str, from_ref: str, to_ref: str) -> str:
 
 @mcp.tool()
 def list_repository_tree(project_id: int | str, path: str = "",
-                         ref: str = None, recursive: bool = False) -> str:
+                         ref: str = None, recursive: bool = False,
+                         target_id: str | None = None) -> str:
     """瀏覽 Repository 檔案結構
 
     Args:
@@ -938,9 +1028,10 @@ def list_repository_tree(project_id: int | str, path: str = "",
         path: 目錄路徑（預設為根目錄）
         ref: 分支或標籤（預設為預設分支）
         recursive: 是否遞迴列出子目錄
+        target_id: GitLab 主機 id（見 list_targets），省略用預設台
     """
     try:
-        client = get_client()
+        client = get_client(target_id)
         items = client.list_repository_tree(project_id, path=path, ref=ref,
                                              recursive=recursive, per_page=100)
         if not items:

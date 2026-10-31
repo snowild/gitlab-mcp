@@ -12,7 +12,47 @@ GitLab MCP Server — 透過 Model Context Protocol 讓 AI 助手（Claude Code�
 - GitLab Personal Access Token（權限範圍：`api`, `read_user`）
   - 取得方式：GitLab > User Settings > Access Tokens
 
-### Docker 部署
+### Docker 部署（多 target，建議）
+
+一個 container 同時服務多台 GitLab，各 tool 以 `target_id` 選台；token 從個人憑證檔讀，不放進 container 的環境變數（`docker inspect` 看不到）。
+
+1. 個人憑證檔 `~/.larvata/credentials.json`（權限 `600`，key 隨意，以 `url` 的 origin 對應 target）：
+
+   ```json
+   {
+     "gitlab-larvata": { "url": "https://gitlab.example.com", "token": "glpat-..." },
+     "gitlab-enzus":   { "url": "https://gitlab-new.example.com", "token": "glpat-..." }
+   }
+   ```
+
+2. 非機密設定 `~/.larvata/gitlab-mcp.env`：
+
+   ```bash
+   GITLAB_MCP_TRANSPORT=sse
+   GITLAB_MCP_HOST=0.0.0.0
+   GITLAB_MCP_PORT=8000
+   GITLAB_CREDENTIALS_FILE=/creds.json
+   GITLAB_TARGETS_JSON=[{"id":"larvata","url":"https://gitlab.example.com","default":true},{"id":"enzus","url":"https://gitlab-new.example.com"}]
+   ```
+
+3. 建置與啟動：
+
+   ```bash
+   docker build -t gitlab-mcp .
+   docker run -d --name gitlab-mcp \
+     --user $(id -u):$(id -g) \
+     --env-file ~/.larvata/gitlab-mcp.env \
+     -v ~/.larvata/credentials.json:/creds.json:ro \
+     -p 127.0.0.1:8001:8000 \
+     --restart unless-stopped \
+     gitlab-mcp
+   ```
+
+`--user` 讓 container 能讀權限 `600` 的憑證檔。憑證檔每次呼叫都重讀，補好 token 不必重啟。用 `list_targets` 看各台的憑證狀態（`present`／`missing`／`ambiguous`／`file_error`）。
+
+### Docker 部署（單台相容模式）
+
+沒設 `GITLAB_TARGETS_JSON` 時，照舊讀 `GITLAB_URL`／`GITLAB_TOKEN`，target id 為 `default`：
 
 ```bash
 # 1. 建置 image
@@ -24,18 +64,6 @@ cp .env.example .env
 
 # 3. 啟動服務
 docker compose up -d
-```
-
-或直接使用 `docker run`：
-
-```bash
-docker run -d --name gitlab-mcp \
-  -p 8001:8000 \
-  -e GITLAB_URL=https://your-gitlab.example.com \
-  -e GITLAB_TOKEN=your_token_here \
-  -e GITLAB_MCP_TRANSPORT=sse \
-  --restart unless-stopped \
-  gitlab-mcp
 ```
 
 ### MCP 客戶端設定
@@ -57,22 +85,27 @@ docker run -d --name gitlab-mcp \
 
 | 變數 | 必填 | 預設值 | 說明 |
 |------|------|--------|------|
-| `GITLAB_URL` | Yes | — | GitLab 位址 |
-| `GITLAB_TOKEN` | Yes | — | Personal Access Token |
+| `GITLAB_TARGETS_JSON` | 多 target | — | target 清單：`[{"id","url","default"}]`，url 須 https、恰好一台 `default: true`（只有一台可省略） |
+| `GITLAB_CREDENTIALS_FILE` | 多 target | — | 憑證檔在 container 內的路徑（如 `/creds.json`） |
+| `GITLAB_URL` | 相容模式 | — | GitLab 位址（設了 `GITLAB_TARGETS_JSON` 就不用） |
+| `GITLAB_TOKEN` | 相容模式 | — | Personal Access Token（多 target 模式下被忽略） |
 | `GITLAB_MCP_TRANSPORT` | No | `stdio` | 傳輸模式（`stdio` / `sse`） |
 | `GITLAB_MCP_HOST` | No | `0.0.0.0` | SSE 監聽位址 |
 | `GITLAB_MCP_PORT` | No | `8000` | SSE 監聽端口 |
 | `GITLAB_MCP_LOG_LEVEL` | No | `INFO` | 日誌等級 |
 | `GITLAB_TIMEOUT` | No | `30` | API 請求逾時（秒） |
 
-## 功能列表（30 tools）
+## 功能列表（31 tools）
+
+除 `list_targets` 外，每個 tool 都有選填參數 `target_id`，省略時用預設台。
 
 ### 管理工具
 
 | Tool | 說明 |
 |------|------|
+| `list_targets` | 列出各 GitLab 主機與憑證狀態（不含 token） |
 | `server_info` | 取得伺服器資訊與 GitLab 版本 |
-| `health_check` | 檢查連線狀態 |
+| `health_check` | 檢查連線狀態；不帶 `target_id` 時逐台檢查 |
 
 ### Projects
 

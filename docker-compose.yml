@@ -1,5 +1,12 @@
 # Docker Compose 配置
 # 使用方式: docker compose up -d
+# 這份是單台相容模式（.env 的 GITLAB_URL／GITLAB_TOKEN）。
+# 多 target 模式：拿掉 GITLAB_URL／GITLAB_TOKEN 兩行與 env_file，改成
+#   user: "${UID}:${GID}"
+#   env_file: [~/.larvata/gitlab-mcp.env]
+#   volumes: ["~/.larvata/credentials.json:/creds.json:ro"]
+#   ports: ["127.0.0.1:8001:8000"]
+# 細節見 README「Docker 部署（多 target，建議）」
 
 services:
   gitlab-mcp:
